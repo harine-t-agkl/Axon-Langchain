@@ -1,0 +1,21 @@
+# Virtual environments
+venv/
+.venv/
+agnikul-env/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Chroma vector DB
+chroma_langchain_db/
+chrome_langchain_db/
+
+# Environment files
+.env
+
+# OS/Editor files
+.vscode/
+.idea/
+.DS_Store
