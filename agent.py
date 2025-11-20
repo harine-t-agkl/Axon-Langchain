@@ -1,126 +1,151 @@
-"""
-Agent wrapper for LocalAIAgentWithRAG.
-
-Behavior:
-  1) Try to build a ReAct agent using langchain_community.agent_toolkits.create_react_agent.
-  2) If that fails (API mismatch), use a simple fallback orchestrator:
-       - First call the RAG tool (agnikul_rag_search)
-       - If RAG returns nothing, call the Wikipedia tool (wikipedia_search)
-  3) Expose run_agent(question: str) -> str to be used by main.py.
-"""
-
-from typing import Optional
 import traceback
+import json
+import re
+import time
+import concurrent.futures
+from typing import Optional
 
-# Core model & tools imports (should exist)
-from langchain_ollama.llms import OllamaLLM
-
-# Our tool registry (Tool objects)
+from langchain_ollama import OllamaLLM
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from tools.registry import TOOLS
 
-# Also import direct callable wrappers so fallback can call them
-try:
-    # Your registry exposes Tool objects; import underlying callables directly
-    from tools.rag_tool import rag_search
-except Exception:
-    rag_search = None
+# Local LLM
+llm = OllamaLLM(model="gemma3:latest", base_url="http://localhost")
 
-try:
-    from tools.wiki_tool import wiki_search
-except Exception:
-    wiki_search = None
+# -------------------------------
+# REACT-LIKE PROMPT
+# -------------------------------
 
-# Attempt to import community agent toolkit (may or may not be available)
-_create_agent_available = False
-try:
-    # Preferred API
-    from langchain_community.agent_toolkits import create_react_agent
-    from langchain.agents import AgentExecutor  # sometimes provided by experimental package
-    _create_agent_available = True
-except Exception:
-    _create_agent_available = False
+SYSTEM = """
+You are an intelligent assistant that can use tools when needed.
+pip install bibtexparser langchain-community
 
-# Initialize model (shared)
-_model = OllamaLLM(model="llama3.1:8b", base_url="http://localhost:11434")
+You have access to the following tools:
+{tool_list}
 
-# If agent toolkit is available, build agent now (lazy-safe)
-_agent_executor: Optional[object] = None
-if _create_agent_available:
+RULES:
+- Think step-by-step.
+- If a tool is needed, output ONLY a JSON dict:
+  {{"tool": "<toolname>", "input": "<text>"}}
+- Otherwise respond normally with your final answer.
+"""
+
+HUMAN = "{input}"
+
+# Convert tool registry to readable text
+def format_tool_list(tools):
+    lines = []
+    for t in tools:
+        lines.append(f"- {t.name}: {t.description}")
+    return "\n".join(lines)
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM),
+    ("human", HUMAN),
+])
+
+parser = StrOutputParser()
+
+chain = prompt | llm | parser
+
+
+# -------------------------------
+# NEW JSON EXTRACTION FIX
+# -------------------------------
+def extract_json(s: str):
+    match = re.search(r"\{.*\}", s, re.DOTALL)
+    if not match:
+        return None
     try:
-        # create_react_agent typically accepts (llm, tools, verbose=..)
-        # different versions may vary; wrap in try so failures fall back
-        _agent_executor = create_react_agent(llm=_model, tools=TOOLS, verbose=False)
-    except Exception:
-        # If it fails, we will fallback at runtime
-        _agent_executor = None
+        return json.loads(match.group())
+    except:
+        return None
 
-def _fallback_orchestrator(question: str) -> str:
-    """
-    Deterministic fallback:
-      1) Call RAG; if results found and appear relevant, return them.
-      2) Else call Wikipedia and return that.
-      3) Else say nothing found.
 
-    Relevance test: we consider RAG "not found" when the rag_search result
-    contains phrases like 'no relevant' or 'No relevant documents' or is very short.
-    """
-    try:
-        # 1) Try RAG first (if available)
-        if rag_search:
-            rag_res = rag_search(question)
-            if rag_res:
-                low = rag_res.lower()
-                # treat 'no relevant' responses as empty
-                if ("no relevant" not in low) and ("no relevant documents" not in low):
-                    # Heuristic: if rag_res contains the query term or "topic:" we treat as relevant.
-                    q_tokens = [t.lower() for t in question.split() if len(t) > 2]
-                    matched = any(tok in low for tok in q_tokens[:5])  # check first few tokens
-                    # also accept if result length is reasonably long
-                    if matched or len(rag_res.split()) > 20:
-                        return f"[RAG]\n\n{rag_res}"
-            # fallthrough if rag_res empty / not relevant
-        # 2) RAG empty or not relevant: call Wikipedia (if available)
-        if wiki_search:
-            wiki_res = wiki_search(question)
-            if wiki_res:
-                return f"[Wikipedia]\n\n{wiki_res}"
-    except Exception as e:
-        import traceback
-        return f"Fallback orchestrator error: {e}\n\nTraceback:\n{traceback.format_exc()}"
-
-    return "No information found in local RAG or Wikipedia."
+# ------------------------------------------------------------
+# AGENT RUNNER
+# ------------------------------------------------------------
+# Configuration: tune these numbers as needed
+TOOL_CALL_TIMEOUT = 100         # seconds per tool call (prevent slow/blocking tools)
+AGENT_TOTAL_TIMEOUT = 1000     # seconds total budget for the whole agent run
+MAX_SAME_TOOL_CALLS = 3       # abort if the same tool is requested > this many times
 
 def run_agent(question: str) -> str:
     """
-    Main entrypoint used by main.py.
-    It will try to run the full agent if available; otherwise use the fallback orchestrator.
-    Returns the final string response.
+    Runs lightweight ReAct-style loop:
+    1. Ask LLM what to do
+    2. If tool call → run tool (with a per-tool timeout)
+    3. Feed result back until final answer
     """
-    # First, if we have an initialized agent executor, try it
-    global _agent_executor
-    if _agent_executor:
-        try:
-            # many agent executors expose a .run() or .invoke() method
-            if hasattr(_agent_executor, "run"):
-                return _agent_executor.run(question)
-            if hasattr(_agent_executor, "invoke"):
-                return _agent_executor.invoke(question)
-            # last resort: call as callable
-            return _agent_executor(question)
-        except Exception:
-            # If agent fails, fall back (but surface the error for debugging)
-            tb = traceback.format_exc()
-            fallback = _fallback_orchestrator(question)
-            return f"Agent execution failed, falling back.\n\nAgent error:\n{tb}\n\nFallback result:\n{fallback}"
 
-    # If no agent executor, use fallback orchestrator
-    return _fallback_orchestrator(question)
+    loop_limit = 5
+    last_output = ""
+    start_time = time.time()
 
+    # Track how many times each tool was requested in this run
+    tool_call_counts = {}
 
-# Optional: small CLI test when running this file directly
-if __name__ == "__main__":
-    import sys
-    q = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
-    if not q:
-        q = input("Question: ").strip()
-    print(run_agent(q))
+    for _ in range(loop_limit):
+
+        # Check overall time budget
+        elapsed = time.time() - start_time
+        if elapsed > AGENT_TOTAL_TIMEOUT:
+            return f"Agent aborted: exceeded overall timeout of {AGENT_TOTAL_TIMEOUT} seconds."
+
+        # Ask LLM for next step
+        ai_msg = chain.invoke({
+            "tool_list": format_tool_list(TOOLS),
+            "input": question if not last_output else f"{question}\n\nTool result:\n{last_output}"
+        })
+
+        # Try to detect JSON tool call using improved extractor
+        tool_call = extract_json(ai_msg)
+
+        # ---- If LLM requests a tool ----
+        if isinstance(tool_call, dict) and "tool" in tool_call:
+            tool_name = tool_call["tool"]
+            tool_input = tool_call.get("input", "")
+            print(f" LLM requested tool: {tool_name} with input: {tool_input}")
+
+            # Find tool
+            tool = next((t for t in TOOLS if t.name == tool_name), None)
+            if not tool:
+                return f"ERROR: Unknown tool '{tool_name}'"
+
+            # Increment usage count for this tool
+            tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+            if tool_call_counts[tool_name] > MAX_SAME_TOOL_CALLS:
+                return (f"Agent aborted: tool '{tool_name}' requested more than "
+                        f"{MAX_SAME_TOOL_CALLS} times. Possible loop or malformed tool usage.")
+
+            try:
+                print(f" Executing tool: {tool_name}")
+
+                # Run the tool with a per-tool timeout so it cannot block forever.
+                # We use a short ThreadPoolExecutor for each tool invocation.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    future = ex.submit(tool.func, tool_input)
+                    try:
+                        result = future.result(timeout=TOOL_CALL_TIMEOUT)
+                    except concurrent.futures.TimeoutError:
+                        # Tool timed out: inform LLM and let it try another tool
+                        last_output = (f"[TOOL TIMEOUT]\nTool '{tool_name}' exceeded "
+                                       f"{TOOL_CALL_TIMEOUT}s and was aborted.")
+                        print(f" Tool '{tool_name}' timed out after {TOOL_CALL_TIMEOUT}s.")
+                        continue
+
+                # Normal successful tool result
+                last_output = f"[TOOL RESULT]\n{result}"
+                continue
+
+            except Exception as e:
+                # Tool raised an exception: show stacktrace to LLM in last_output but continue
+                last_output = f"Tool error: {e}\n{traceback.format_exc()}"
+                print(f" Tool '{tool_name}' raised an exception: {e}")
+                continue
+
+        # ---- Not a tool call → final answer ----
+        return ai_msg
+
+    return "Agent exceeded reasoning loop limit."

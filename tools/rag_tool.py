@@ -15,7 +15,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # instantiate a short-lived local model for summarization
-_summarizer_llm = OllamaLLM(model="gemma3", base_url="http://localhost:11434")
+_summarizer_llm = OllamaLLM(model="gemma3:latest", base_url="http://localhost")
 _summary_template = """You are a concise, factual assistant. Use ONLY the CONTEXT to answer the QUESTION below.
 If the context does not contain the answer, say "I don't know (not in context)."
 
@@ -32,6 +32,7 @@ If the context does not contain the answer, say "I don't know (not in context)."
 
 _prompt = PromptTemplate.from_template(_summary_template)
 _summary_chain = _prompt | _summarizer_llm | StrOutputParser()
+
 
 
 def _call_retriever(query: str, k: int = 5):

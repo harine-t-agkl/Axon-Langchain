@@ -1,21 +1,51 @@
-# Virtual environments
+# -----------------------------
+# Virtual Environments
+# -----------------------------
 venv/
 .venv/
 agnikul-env/
 env/
+.venv-lc/
 
-# Python cache
+# -----------------------------
+# Python Cache
+# -----------------------------
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Chroma vector DB
+# -----------------------------
+# Vector DB / LangChain Cache
+# -----------------------------
 chroma_langchain_db/
 chrome_langchain_db/
+lc_cache/
+langchain.db
 
-# Environment files
+# -----------------------------
+# Environment / Secret Files
+# -----------------------------
 .env
+*.env
+.env.*
+api_keys.py
+secrets.json
 
-# OS/Editor files
+# -----------------------------
+# OS / Editor Files
+# -----------------------------
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
+
+# -----------------------------
+# Logs
+# -----------------------------
+*.log
+
+# -----------------------------
+# Local Development Files
+# -----------------------------
+*.sqlite3

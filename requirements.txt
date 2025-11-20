@@ -1,4 +1,29 @@
-langchain
-langchain-ollama
-langchain-chroma
-pandas
+# langchain
+# langchain-ollama
+# langchain-chroma
+# pandas
+
+# Core LangChain 0.2.x ecosystem (pins that work together)
+langchain==0.2.15
+langchain-core==0.2.43
+langchain-community==0.2.15
+langchain-ollama==0.1.0
+langsmith==0.1.147
+langchain-text-splitters==0.2.4
+
+# Helpful utilities 
+python-dotenv==1.2.1
+
+#retrieval & search 
+chromadb==0.3.26
+langchain-chroma==0.2.0
+
+# Wikipedia tool used by langchain_community utilities
+wikipedia==1.4.0
+
+# DuckDuckGo wrapper 
+duckduckgo_search==2.9.6
+
+# Dev / server
+uvicorn==0.18.3
+websockets==10.4

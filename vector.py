@@ -12,9 +12,8 @@ df = pd.read_csv("dataset.csv", quotechar='"', escapechar='\\')
 
 # Embedding model (Ollama embeddings running locally)
 embeddings = OllamaEmbeddings(
-    model="mxbai-embed-large",
-    base_url="http://localhost:11434"
-)
+    model="mxbai-embed-large"
+    )
 
 db_location = "./chroma_langchain_db"
 add_documents = not os.path.exists(db_location)

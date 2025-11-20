@@ -1,11 +1,13 @@
-# main.py  -- explicit Wikipedia trigger + agent fallback
-import sys, traceback
+
+# main.py -- clean version (no wiki trigger, with timeout)
+import sys
+import traceback
+import concurrent.futures
 from agent import run_agent
-# import direct wiki_search for explicit requests
-from tools.wiki_tool import wiki_search
 
 def main_loop():
     print("Agnikul assistant (agent). Type 'q' to quit.")
+
     while True:
         try:
             question = input("Ask your question (q to quit): ").strip()
@@ -19,30 +21,54 @@ def main_loop():
             print("Goodbye.")
             break
 
-        # ---------- explicit wiki trigger ----------
-        lowered = question.lower().strip()
-        if ("wikipedia" in lowered) or ("wiki" in lowered) or lowered.startswith("wiki:") or lowered.startswith("w:") or ("use wikipedia" in lowered):
-            print("Explicit Wikipedia request detected — calling Wikipedia tool...\n")
-            try:
-                wiki_res = wiki_search(question)
-                # if wiki_search returns empty or an error message, show fallback message
-                if not wiki_res:
-                    print("Wikipedia returned no results.")
-                else:
-                    # Print the wiki result (it's already cleaned by the wrapper)
-                    print("\nWIKIPEDIA RESULT:\n")
-                    print(wiki_res)
-            except Exception:
-                print("Wikipedia lookup failed (traceback):", file=sys.stderr)
-                traceback.print_exc()
-            # after wiki result, continue loop
-            continue
-
-        # ---------- otherwise use the agent ----------
+        # ------------------------------
+        # Run the agent with a timeout
+        # ------------------------------
         try:
-            response = run_agent(question)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_agent, question)
+                # ⬇ Set timeout here (in seconds)
+                response = future.result(timeout=100)
+
             print("\nRESPONSE:\n")
             print(response)
+
+        except concurrent.futures.TimeoutError:
+            print("\n⚠ Agent timed out after 100 seconds.\nTry a shorter query.")
+        except Exception:
+            print("Agent error (traceback):", file=sys.stderr)
+            traceback.print_exc()
+
+def main_loop():
+    print("Agnikul assistant (agent). Type 'q' to quit.")
+
+    while True:
+        try:
+            question = input("Ask your question (q to quit): ").strip()
+        except EOFError:
+            print("\nEOF received, exiting.")
+            break
+
+        if not question:
+            continue
+        if question.lower() == "q":
+            print("Goodbye.")
+            break
+
+        # ------------------------------
+        # Run the agent with a timeout
+        # ------------------------------
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_agent, question)
+                # ⬇ Set timeout here (in seconds)
+                response = future.result(timeout=1000)
+
+            print("\nRESPONSE:\n")
+            print(response)
+
+        except concurrent.futures.TimeoutError:
+            print("\n⚠ Agent timed out after 1000 seconds.\nTry a shorter query.")
         except Exception:
             print("Agent error (traceback):", file=sys.stderr)
             traceback.print_exc()
